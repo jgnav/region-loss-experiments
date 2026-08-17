@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import torch
 import torch.backends.cudnn as cudnn
 import torch.nn as nn
+import wandb
 import yaml
 from tensorboardX import SummaryWriter
 
@@ -21,7 +22,7 @@ from losses import iBOTLoss
 from model import create_model, iBOTHead
 from utils import training as utils
 from utils.checkpoint import load_training_state, read_full_checkpoint
-from utils.recipe import ORIGINAL_IBOT_RECIPE
+from utils.recipe import get_ibot_recipe
 
 
 def parse_args():
@@ -34,18 +35,41 @@ def load_config(path):
     with path.open("r", encoding="utf-8") as handle:
         config = yaml.safe_load(handle)
 
-    config.update(ORIGINAL_IBOT_RECIPE)
+    config.update(get_ibot_recipe(config["arch"]))
     for key in ("data_path", "initial_checkpoint", "output_dir"):
         config[key] = os.path.expandvars(os.path.expanduser(config[key]))
     config["initial_checkpoint"] = Path(config["initial_checkpoint"])
     return SimpleNamespace(**config)
 
 
-def train_ibot(args):
+def init_wandb(args):
+    config = {
+        key: str(value) if isinstance(value, Path) else value
+        for key, value in vars(args).items()
+    }
+    return wandb.init(
+        project=args.wandb_project,
+        entity=args.wandb_entity,
+        name=args.wandb_run_name,
+        dir=args.output_dir,
+        config=config,
+        job_type="pretraining-continuation",
+    )
+
+
+def train_ibot(args, wandb_run=None):
     utils.init_distributed_mode(args)
     utils.fix_random_seeds(args.seed)
     args.effective_batch_size = args.batch_size_per_gpu * utils.get_world_size()
     checkpoint = read_full_checkpoint(args)
+    if wandb_run is not None:
+        wandb_run.config.update(
+            {
+                "effective_batch_size": args.effective_batch_size,
+                "start_epoch": args.start_epoch,
+                "final_epoch": args.epochs,
+            }
+        )
     print("\n".join(f"{key}: {value}" for key, value in sorted(vars(args).items())))
     cudnn.benchmark = True
 
@@ -241,11 +265,29 @@ def train_ibot(args):
                 handle.write(json.dumps(log_stats) + "\n")
             for key, value in train_stats.items():
                 writer.add_scalar(key, value, epoch)
+            if wandb_run is not None:
+                wandb_run.log(
+                    {
+                        "epoch": epoch + 1,
+                        "state/global_step": (epoch + 1) * len(data_loader),
+                        **{
+                            f"train/{key}": value
+                            for key, value in train_stats.items()
+                        },
+                    },
+                    step=epoch + 1,
+                )
 
     if writer is not None:
         writer.close()
     total_time = time.time() - start_time
     total_time_string = str(datetime.timedelta(seconds=int(total_time)))
+    if wandb_run is not None:
+        wandb_run.summary["state/final_epoch"] = args.epochs
+        wandb_run.summary["state/training_time_seconds"] = total_time
+        wandb_run.summary["state/checkpoint"] = str(
+            Path(args.output_dir) / "checkpoint.pth"
+        )
     print(f"Training time {total_time_string}")
 
 
@@ -374,9 +416,18 @@ def main():
     if args.initial_checkpoint.resolve() == output_checkpoint.resolve():
         raise ValueError("The output checkpoint must not overwrite the input checkpoint")
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+    wandb_run = None
+    if int(os.environ.get("RANK", "0")) == 0:
+        wandb_run = init_wandb(args)
+    exit_code = 0
     try:
-        train_ibot(args)
+        train_ibot(args, wandb_run)
+    except BaseException:
+        exit_code = 1
+        raise
     finally:
+        if wandb_run is not None:
+            wandb_run.finish(exit_code=exit_code)
         utils.destroy_process_group()
 
 
