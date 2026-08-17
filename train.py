@@ -1,4 +1,4 @@
-"""Continue official iBOT pretraining using one YAML configuration argument."""
+"""Warm-start iBOT pretraining from model weights using one YAML config."""
 
 import argparse
 import datetime
@@ -21,7 +21,7 @@ from data import DataAugmentationiBOT, ImageFolderMask
 from losses import iBOTLoss
 from model import create_model, iBOTHead
 from utils import training as utils
-from utils.checkpoint import load_training_state, read_full_checkpoint
+from utils.checkpoint import load_pretrained_weights, read_pretrained_checkpoint
 from utils.recipe import get_ibot_recipe
 
 
@@ -53,7 +53,7 @@ def init_wandb(args):
         name=args.wandb_run_name,
         dir=args.output_dir,
         config=config,
-        job_type="pretraining-continuation",
+        job_type="pretraining-warm-start",
     )
 
 
@@ -61,13 +61,14 @@ def train_ibot(args, wandb_run=None):
     utils.init_distributed_mode(args)
     utils.fix_random_seeds(args.seed)
     args.effective_batch_size = args.batch_size_per_gpu * utils.get_world_size()
-    checkpoint = read_full_checkpoint(args)
+    checkpoint = read_pretrained_checkpoint(args)
     if wandb_run is not None:
         wandb_run.config.update(
             {
                 "effective_batch_size": args.effective_batch_size,
-                "start_epoch": args.start_epoch,
+                "start_epoch": 0,
                 "final_epoch": args.epochs,
+                "source_checkpoint_epoch": args.source_checkpoint_epoch,
             }
         )
     print("\n".join(f"{key}: {value}" for key, value in sorted(vars(args).items())))
@@ -209,17 +210,19 @@ def train_ibot(args, wandb_run=None):
     )
     print("Loss, optimizer and schedulers ready.")
 
-    load_training_state(
-        checkpoint, student, teacher, optimizer, fp16_scaler, ibot_loss
-    )
+    load_pretrained_weights(checkpoint, student, teacher)
     del checkpoint
+    source_epoch = args.source_checkpoint_epoch
+    source_description = (
+        f" at epoch {source_epoch}" if source_epoch is not None else ""
+    )
     print(
-        f"Continuing checkpoint epoch {args.start_epoch} through epoch "
-        f"{args.epochs} ({args.epoch} epochs)."
+        f"Loaded pretrained student and teacher weights{source_description}. "
+        f"Starting a fresh {args.epochs}-epoch optimization run."
     )
 
     start_time = time.time()
-    for epoch in range(args.start_epoch, args.epochs):
+    for epoch in range(args.epochs):
         data_loader.sampler.set_epoch(epoch)
         data_loader.dataset.set_epoch(epoch)
 

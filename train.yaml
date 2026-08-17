@@ -1,7 +1,8 @@
 # Paths
-data_path: ${IMAGENET_TRAIN}
-initial_checkpoint: ${IBOT_CHECKPOINT}
-output_dir: ${IBOT_OUTPUT_DIR}
+data_path: dataset/imagenet/train
+# Only student/teacher model weights are loaded; training state starts fresh.
+initial_checkpoint: checkpoints/ibot_vit_small.pth
+output_dir: output
 
 # Model
 arch: vit_small
@@ -14,8 +15,8 @@ teacher_temp: 0.07
 teacher_patch_temp: 0.07
 
 # Training
-# Number of epochs to train after loading the checkpoint.
-epoch: 50
+# Number of epochs in the new run. Schedules start from epoch 0.
+epochs: 50
 gpu_count: 4
 batch_size_per_gpu: 64
 seed: 0
@@ -24,7 +25,7 @@ use_fp16: true
 # Optimizer and schedules
 optimizer: adamw
 lr_schedule: cosine
-warmup_epochs: 10
+warmup_epochs: 0
 weight_decay: 0.04
 
 # Data loading
