@@ -49,10 +49,12 @@ class ImageFolderMask(ImageFolder):
         self.epoch = epoch
 
     def __getitem__(self, index):
-        output = super(ImageFolderMask, self).__getitem__(index)
+        (images, global_crop_boxes), target = super(
+            ImageFolderMask, self
+        ).__getitem__(index)
 
         masks = []
-        for img in output[0]:
+        for img in images:
             try:
                 H, W = img.shape[1] // self.psz, img.shape[2] // self.psz
             except Exception:
@@ -100,4 +102,4 @@ class ImageFolderMask(ImageFolder):
 
             masks.append(mask)
 
-        return output + (masks,)
+        return images, target, masks, global_crop_boxes

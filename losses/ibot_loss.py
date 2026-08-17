@@ -4,6 +4,8 @@ import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .region_loss import RegionLoss
+
 
 class iBOTLoss(nn.Module):
     def __init__(
@@ -23,6 +25,8 @@ class iBOTLoss(nn.Module):
         center_momentum2=0.9,
         lambda1=1.0,
         lambda2=1.0,
+        lambda3=1.0,
+        region_min_area=0.05,
         mim_start_epoch=0,
     ):
         super().__init__()
@@ -36,6 +40,8 @@ class iBOTLoss(nn.Module):
         self.register_buffer("center2", torch.zeros(1, 1, patch_out_dim))
         self.lambda1 = lambda1
         self.lambda2 = lambda2
+        self.lambda3 = lambda3
+        self.region_loss = RegionLoss(region_min_area)
 
         self.teacher_temp_schedule = np.concatenate(
             (
@@ -78,7 +84,13 @@ class iBOTLoss(nn.Module):
         )
 
     def forward(
-        self, student_output, teacher_output, student_local_cls, student_mask, epoch
+        self,
+        student_output,
+        teacher_output,
+        student_local_cls,
+        student_mask,
+        crop_boxes,
+        epoch,
     ):
         student_cls, student_patch = student_output
         teacher_cls, teacher_patch = teacher_output
@@ -127,10 +139,19 @@ class iBOTLoss(nn.Module):
 
         total_loss1 = total_loss1 / n_loss_terms1 * self.lambda1
         total_loss2 = total_loss2 / n_loss_terms2 * self.lambda2
+        region_stats = self.region_loss(
+            student_patch_c,
+            teacher_patch_c,
+            crop_boxes,
+        )
+        total_loss3 = region_stats["loss"] * self.lambda3
         total_loss = {
             "cls": total_loss1,
             "patch": total_loss2,
-            "loss": total_loss1 + total_loss2,
+            "region": total_loss3,
+            "region_valid_ratio": region_stats["valid_ratio"],
+            "region_intersection_area": region_stats["intersection_area"],
+            "loss": total_loss1 + total_loss2 + total_loss3,
         }
         self.update_center(teacher_cls, teacher_patch)
         return total_loss

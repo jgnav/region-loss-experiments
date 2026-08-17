@@ -1,5 +1,7 @@
+import torch
 from PIL import Image
 from torchvision import transforms
+from torchvision.transforms import functional as F
 
 from utils import training as utils
 
@@ -14,9 +16,8 @@ class DataAugmentationiBOT:
         global_crop_size,
         local_crop_size,
     ):
-        flip_and_color_jitter = transforms.Compose(
+        color_jitter = transforms.Compose(
             [
-                transforms.RandomHorizontalFlip(p=0.5),
                 transforms.RandomApply(
                     [
                         transforms.ColorJitter(
@@ -42,49 +43,92 @@ class DataAugmentationiBOT:
         )
 
         self.global_crops_number = global_crops_number
+        self.global_crops_scale = global_crops_scale
+        self.global_crop_size = global_crop_size
         self.global_transfo1 = transforms.Compose(
             [
-                transforms.RandomResizedCrop(
-                    global_crop_size,
-                    scale=global_crops_scale,
-                    interpolation=Image.BICUBIC,
-                ),
-                flip_and_color_jitter,
+                color_jitter,
                 utils.GaussianBlur(1.0),
                 normalize,
             ]
         )
         self.global_transfo2 = transforms.Compose(
             [
-                transforms.RandomResizedCrop(
-                    global_crop_size,
-                    scale=global_crops_scale,
-                    interpolation=Image.BICUBIC,
-                ),
-                flip_and_color_jitter,
+                color_jitter,
                 utils.GaussianBlur(0.1),
                 utils.Solarization(0.2),
                 normalize,
             ]
         )
         self.local_crops_number = local_crops_number
+        self.local_crops_scale = local_crops_scale
+        self.local_crop_size = local_crop_size
         self.local_transfo = transforms.Compose(
             [
-                transforms.RandomResizedCrop(
-                    local_crop_size,
-                    scale=local_crops_scale,
-                    interpolation=Image.BICUBIC,
-                ),
-                flip_and_color_jitter,
+                color_jitter,
                 utils.GaussianBlur(p=0.5),
                 normalize,
             ]
         )
 
+    @staticmethod
+    def _spatial_transform(image, size, scale):
+        top, left, height, width = transforms.RandomResizedCrop.get_params(
+            image,
+            scale=scale,
+            ratio=(3.0 / 4.0, 4.0 / 3.0),
+        )
+        image_width, image_height = image.size
+        crop = F.resized_crop(
+            image,
+            top,
+            left,
+            height,
+            width,
+            [size, size],
+            interpolation=Image.BICUBIC,
+            antialias=True,
+        )
+        flipped = torch.rand(1).item() < 0.5
+        if flipped:
+            crop = F.hflip(crop)
+
+        crop_box = torch.tensor(
+            [
+                left / image_width,
+                top / image_height,
+                (left + width) / image_width,
+                (top + height) / image_height,
+                float(flipped),
+            ],
+            dtype=torch.float32,
+        )
+        return crop, crop_box
+
+    def _global_crop(self, image, transform):
+        crop, crop_box = self._spatial_transform(
+            image,
+            self.global_crop_size,
+            self.global_crops_scale,
+        )
+        return transform(crop), crop_box
+
+    def _local_crop(self, image):
+        crop, _ = self._spatial_transform(
+            image,
+            self.local_crop_size,
+            self.local_crops_scale,
+        )
+        return self.local_transfo(crop)
+
     def __call__(self, image):
-        crops = [self.global_transfo1(image)]
+        first_crop, first_box = self._global_crop(image, self.global_transfo1)
+        crops = [first_crop]
+        global_crop_boxes = [first_box]
         for _ in range(self.global_crops_number - 1):
-            crops.append(self.global_transfo2(image))
+            crop, crop_box = self._global_crop(image, self.global_transfo2)
+            crops.append(crop)
+            global_crop_boxes.append(crop_box)
         for _ in range(self.local_crops_number):
-            crops.append(self.local_transfo(image))
-        return crops
+            crops.append(self._local_crop(image))
+        return crops, torch.stack(global_crop_boxes)

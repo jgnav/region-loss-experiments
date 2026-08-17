@@ -8,8 +8,11 @@ output_dir: output
 arch: vit_small
 
 # Loss and teacher
-lambda1: 1.0
-lambda2: 1.0
+lambda1: 1.0  # Global CLS loss
+lambda2: 1.0  # Masked patch loss
+lambda3: 1.0  # Intersection-region loss
+# Minimum two-view intersection as a fraction of the original image area.
+region_min_area: 0.05
 momentum_teacher: 0.996
 teacher_temp: 0.07
 teacher_patch_temp: 0.07

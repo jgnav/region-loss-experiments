@@ -175,6 +175,8 @@ def train_ibot(args, wandb_run=None):
         center_momentum2=args.center_momentum2,
         lambda1=args.lambda1,
         lambda2=args.lambda2,
+        lambda3=args.lambda3,
+        region_min_area=args.region_min_area,
         mim_start_epoch=args.pred_start_epoch,
     ).cuda()
 
@@ -330,7 +332,7 @@ def train_one_epoch(
         if name_k in names_common
     ]
 
-    for iteration, (images, _labels, masks) in enumerate(
+    for iteration, (images, _labels, masks, crop_boxes) in enumerate(
         metric_logger.log_every(data_loader, args.print_freq, header)
     ):
         schedule_iteration = len(data_loader) * epoch + iteration
@@ -341,6 +343,7 @@ def train_one_epoch(
 
         images = [image.cuda(non_blocking=True) for image in images]
         masks = [mask.cuda(non_blocking=True) for mask in masks]
+        crop_boxes = crop_boxes.cuda(non_blocking=True)
 
         with torch.cuda.amp.autocast(fp16_scaler is not None):
             teacher_output = teacher(images[: args.global_crops_number])
@@ -358,7 +361,12 @@ def train_one_epoch(
             student.module.backbone.masked_im_modeling = args.use_masked_im_modeling
 
             all_loss = ibot_loss(
-                student_output, teacher_output, student_local_cls, masks, epoch
+                student_output,
+                teacher_output,
+                student_local_cls,
+                masks,
+                crop_boxes,
+                epoch,
             )
             loss = all_loss.pop("loss")
 
