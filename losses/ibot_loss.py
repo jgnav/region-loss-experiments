@@ -26,6 +26,7 @@ class iBOTLoss(nn.Module):
         lambda1=1.0,
         lambda2=1.0,
         lambda3=1.0,
+        region_warmup_epochs=0,
         region_min_area=0.05,
         mim_start_epoch=0,
     ):
@@ -42,6 +43,20 @@ class iBOTLoss(nn.Module):
         self.lambda2 = lambda2
         self.lambda3 = lambda3
         self.region_loss = RegionLoss(region_min_area)
+
+        if not 0 <= region_warmup_epochs <= nepochs:
+            raise ValueError(
+                "region_warmup_epochs must be between 0 and the number of epochs"
+            )
+        if region_warmup_epochs:
+            self.region_weight_schedule = np.concatenate(
+                (
+                    np.linspace(0.0, lambda3, region_warmup_epochs),
+                    np.full(nepochs - region_warmup_epochs, lambda3),
+                )
+            )
+        else:
+            self.region_weight_schedule = np.full(nepochs, lambda3)
 
         self.teacher_temp_schedule = np.concatenate(
             (
@@ -144,11 +159,14 @@ class iBOTLoss(nn.Module):
             teacher_patch_c,
             crop_boxes,
         )
-        total_loss3 = region_stats["loss"] * self.lambda3
+        region_weight = float(self.region_weight_schedule[epoch])
+        total_loss3 = region_stats["loss"] * region_weight
         total_loss = {
             "cls": total_loss1,
             "patch": total_loss2,
             "region": total_loss3,
+            "region_raw": region_stats["loss"],
+            "region_weight": total_loss3.new_tensor(region_weight),
             "region_valid_ratio": region_stats["valid_ratio"],
             "region_intersection_area": region_stats["intersection_area"],
             "loss": total_loss1 + total_loss2 + total_loss3,

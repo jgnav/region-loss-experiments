@@ -22,6 +22,7 @@ source .venv/bin/activate
 
 export OMP_NUM_THREADS=1
 export WANDB_MODE=online
+export IBOT_RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-slurm-${SLURM_JOB_ID}"
 : "${WANDB_API_KEY:?Export WANDB_API_KEY before submitting the job}"
 
 srun torchrun --standalone --nproc-per-node=4 train.py train.yaml

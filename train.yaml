@@ -1,8 +1,9 @@
 # Paths
 data_path: dataset/imagenet/train
-# Only student/teacher model weights are loaded; training state starts fresh.
+# Must be an official full checkpoint with student, teacher, heads, and centers.
 initial_checkpoint: checkpoints/ibot_vit_small.pth
-output_dir: output
+# Every launch creates a run-specific subdirectory below this root.
+output_dir: output/region_loss
 
 # Model
 arch: vit_small
@@ -10,10 +11,11 @@ arch: vit_small
 # Loss and teacher
 lambda1: 1.0  # Global CLS loss
 lambda2: 1.0  # Masked patch loss
-lambda3: 1.0  # Intersection-region loss
+lambda3: 0.1  # Final intersection-region loss weight
+region_warmup_epochs: 5  # Linear ramp from zero to lambda3
 # Minimum two-view intersection as a fraction of the original image area.
-region_min_area: 0.05
-momentum_teacher: 0.996
+region_min_area: 0.10
+momentum_teacher: 0.9995
 teacher_temp: 0.07
 teacher_patch_temp: 0.07
 
@@ -28,7 +30,9 @@ use_fp16: true
 # Optimizer and schedules
 optimizer: adamw
 lr_schedule: cosine
-warmup_epochs: 0
+lr: 0.0001
+min_lr: 0.000001
+warmup_epochs: 5
 weight_decay: 0.04
 
 # Data loading

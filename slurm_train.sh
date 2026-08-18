@@ -22,6 +22,7 @@ source .venv/bin/activate
 
 export OMP_NUM_THREADS=1
 export WANDB_MODE=online
-export WANDB_API_KEY="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"
+export IBOT_RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-slurm-${SLURM_JOB_ID}"
+: "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"
 
 srun torchrun --standalone --nproc-per-node=4 train.py train.yaml

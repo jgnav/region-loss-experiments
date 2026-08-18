@@ -5,6 +5,7 @@ import datetime
 import json
 import math
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -21,7 +22,7 @@ from data import DataAugmentationiBOT, ImageFolderMask
 from losses import iBOTLoss
 from model import create_model, iBOTHead
 from utils import training as utils
-from utils.checkpoint import load_pretrained_weights, read_pretrained_checkpoint
+from utils.checkpoint import load_pretrained_state, read_pretrained_checkpoint
 from utils.recipe import get_ibot_recipe
 
 
@@ -33,13 +34,33 @@ def parse_args():
 
 def load_config(path):
     with path.open("r", encoding="utf-8") as handle:
-        config = yaml.safe_load(handle)
+        user_config = yaml.safe_load(handle)
 
-    config.update(get_ibot_recipe(config["arch"]))
+    config = {**get_ibot_recipe(user_config["arch"]), **user_config}
     for key in ("data_path", "initial_checkpoint", "output_dir"):
         config[key] = os.path.expandvars(os.path.expanduser(config[key]))
     config["initial_checkpoint"] = Path(config["initial_checkpoint"])
     return SimpleNamespace(**config)
+
+
+def assign_run_output_directory(args):
+    output_root = Path(args.output_dir)
+    run_id = (
+        os.environ.get("IBOT_RUN_ID")
+        or os.environ.get("SLURM_JOB_ID")
+        or os.environ.get("TORCHELASTIC_RUN_ID")
+    )
+    if not run_id or run_id.lower() == "none":
+        if int(os.environ.get("WORLD_SIZE", "1")) > 1:
+            raise ValueError(
+                "Distributed training requires a shared IBOT_RUN_ID when "
+                "Slurm and torchrun do not provide one"
+            )
+        run_id = datetime.datetime.now().strftime("%Y%m%dT%H%M%S-%f")
+    run_id = re.sub(r"[^A-Za-z0-9_.-]", "-", run_id)
+    args.output_root = str(output_root)
+    args.run_id = run_id
+    args.output_dir = str(output_root / run_id)
 
 
 def init_wandb(args):
@@ -176,6 +197,7 @@ def train_ibot(args, wandb_run=None):
         lambda1=args.lambda1,
         lambda2=args.lambda2,
         lambda3=args.lambda3,
+        region_warmup_epochs=args.region_warmup_epochs,
         region_min_area=args.region_min_area,
         mim_start_epoch=args.pred_start_epoch,
     ).cuda()
@@ -212,15 +234,16 @@ def train_ibot(args, wandb_run=None):
     )
     print("Loss, optimizer and schedulers ready.")
 
-    load_pretrained_weights(checkpoint, student, teacher)
+    load_pretrained_state(checkpoint, student, teacher, ibot_loss)
     del checkpoint
     source_epoch = args.source_checkpoint_epoch
     source_description = (
         f" at epoch {source_epoch}" if source_epoch is not None else ""
     )
     print(
-        f"Loaded pretrained student and teacher weights{source_description}. "
-        f"Starting a fresh {args.epochs}-epoch optimization run."
+        "Loaded pretrained student, teacher, projection heads, and iBOT "
+        f"centers{source_description}. Starting a fresh {args.epochs}-epoch "
+        "adaptation optimizer and schedules."
     )
 
     start_time = time.time()
@@ -423,6 +446,7 @@ def train_one_epoch(
 def main():
     cli_args = parse_args()
     args = load_config(cli_args.config)
+    assign_run_output_directory(args)
     output_checkpoint = Path(args.output_dir) / "checkpoint.pth"
     if args.initial_checkpoint.resolve() == output_checkpoint.resolve():
         raise ValueError("The output checkpoint must not overwrite the input checkpoint")
