@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=48
 #SBATCH --mem=128G
 #SBATCH --time=48:00:00
-#SBATCH --gres=gpu:a100:4
+#SBATCH --gres=gpu:l40s:4
 
 set -euo pipefail
 
@@ -20,7 +20,8 @@ REPO_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 cd "${REPO_DIR}"
 
 # Edit this line to select the checkpoint to evaluate.
-CHECKPOINT_PATH="${REPO_DIR}/output/region_loss/20260818T154524Z-slurm-1295383/checkpoint.pth"
+# CHECKPOINT_PATH="${REPO_DIR}/output/region_loss/20260818T233720Z-slurm-1295841/checkpoint.pth"
+CHECKPOINT_PATH="${REPO_DIR}/checkpoints/ibot_vit_small.pth"
 DATASETS_ROOT="${1:-${REPO_DIR}/dataset}"
 OUTPUT_DIR="${2:-${REPO_DIR}/output/evaluation/slurm-${SLURM_JOB_ID}}"
 VENV_DIR="${EVALUATION_VENV:-${REPO_DIR}/.venv}"

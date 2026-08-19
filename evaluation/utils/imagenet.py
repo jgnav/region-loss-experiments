@@ -232,12 +232,13 @@ def run_imagenet_knn(args):
     )
     train_dataset = IndexedSubset(full_train_dataset, train_indices)
     val_dataset = IndexedImageFolder(root / "val", transform=_eval_transform())
-    print(
-        "ImageNet loaded: "
-        f"{len(train_dataset)}/{len(full_train_dataset)} train (10%), "
-        f"{len(val_dataset)} val; subset seed={args.seed}",
-        flush=True,
-    )
+    if is_main_process():
+        print(
+            "ImageNet loaded: "
+            f"{len(train_dataset)}/{len(full_train_dataset)} train (10%), "
+            f"{len(val_dataset)} val; subset seed={args.seed}",
+            flush=True,
+        )
     train_features, train_labels = _extract_distributed_features(
         model, train_dataset, args, "ImageNet train features"
     )

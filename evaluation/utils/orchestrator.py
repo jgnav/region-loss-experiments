@@ -9,7 +9,13 @@ from pathlib import Path
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from evaluation.utils.common import ARCHITECTURES, REPO_ROOT, utc_now, write_json
+from evaluation.utils.common import (
+    ARCHITECTURES,
+    REPO_ROOT,
+    checkpoint_fingerprint,
+    utc_now,
+    write_json,
+)
 
 
 EVALUATIONS = (
@@ -101,6 +107,26 @@ def _write_summary(path, args, started_at, status, results, error=None):
     write_json(path, summary)
 
 
+def _load_completed_result(path, args, evaluation_name):
+    if not path.is_file():
+        return None
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            result = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+    model = result.get("model", {})
+    if (
+        result.get("status") != "completed"
+        or result.get("evaluation") != evaluation_name
+        or model.get("checkpoint_fingerprint")
+        != checkpoint_fingerprint(args.checkpoint)
+        or model.get("checkpoint_key") != args.checkpoint_key
+    ):
+        return None
+    return result
+
+
 def main(argv=None):
     args = _parser().parse_args(argv)
     args.checkpoint = args.checkpoint.expanduser().resolve()
@@ -134,11 +160,23 @@ def main(argv=None):
     for evaluation_index, (name, module, cache_name) in enumerate(
         EVALUATIONS, start=1
     ):
+        result_path = args.output_dir / f"{name}.json"
+        completed_result = _load_completed_result(result_path, args, name)
+        if completed_result is not None:
+            results[name] = completed_result
+            _write_summary(
+                args.result_json, args, started_at, "running", results
+            )
+            print(
+                f"[{evaluation_index}/{len(EVALUATIONS)}] "
+                f"Reusing completed {name}",
+                flush=True,
+            )
+            continue
         print(
             f"\n[{evaluation_index}/{len(EVALUATIONS)}] Starting {name}",
             flush=True,
         )
-        result_path = args.output_dir / f"{name}.json"
         command = [
             sys.executable,
             "-m",
