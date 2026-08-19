@@ -1,0 +1,11 @@
+--extra-index-url https://download.pytorch.org/whl/cu121
+--extra-index-url https://pypi.nvidia.com
+
+torch==2.5.1+cu121
+torchvision==0.20.1+cu121
+numpy==1.26.4
+Pillow==10.4.0
+scikit-learn==1.5.2
+scipy==1.14.1
+tqdm==4.67.1
+cuml-cu12==24.6.1
