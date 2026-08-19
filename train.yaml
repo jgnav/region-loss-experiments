@@ -11,7 +11,7 @@ arch: vit_small
 # Loss and teacher
 lambda1: 1.0  # Global CLS loss
 lambda2: 1.0  # Masked patch loss
-lambda3: 0.1  # Final intersection-region loss weight
+lambda3: 0.2  # Final intersection-region loss weight
 region_warmup_epochs: 5  # Linear ramp from zero to lambda3
 # Minimum two-view intersection as a fraction of the original image area.
 region_min_area: 0.10

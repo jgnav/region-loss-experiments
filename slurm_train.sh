@@ -6,7 +6,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=48
 #SBATCH --mem-per-cpu=1G
-#SBATCH --time=03:00:00
+#SBATCH --time=48:00:00
 #SBATCH --gres=gpu:a100:4
 
 set -euo pipefail
@@ -23,6 +23,6 @@ source .venv/bin/activate
 export OMP_NUM_THREADS=1
 export WANDB_MODE=online
 export IBOT_RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-slurm-${SLURM_JOB_ID}"
-: "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"
+export WANDB_API_KEY="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"
 
 srun torchrun --standalone --nproc-per-node=4 train.py train.yaml
