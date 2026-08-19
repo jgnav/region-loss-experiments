@@ -1,4 +1,5 @@
 --extra-index-url https://download.pytorch.org/whl/cu121
+--extra-index-url https://pypi.nvidia.com
 torch==2.3.1+cu121
 torchvision==0.18.1+cu121
 PyYAML>=6.0
@@ -6,3 +7,7 @@ numpy>=1.24,<2.0
 Pillow>=9.0
 tensorboardX>=2.6
 wandb>=0.19.10
+scikit-learn==1.5.2
+scipy==1.14.1
+tqdm==4.67.1
+cuml-cu12==24.6.1

@@ -13,6 +13,12 @@ set -euo pipefail
 
 cd "${SLURM_SUBMIT_DIR}"
 
+CONFIG_PATH="${1:-train.yaml}"
+if [[ ! -f "${CONFIG_PATH}" ]]; then
+    echo "Training configuration not found: ${CONFIG_PATH}" >&2
+    exit 2
+fi
+
 module --force purge
 module load apps/2021
 module load Python/3.10.8-GCCcore-12.2.0
@@ -22,7 +28,12 @@ source .venv/bin/activate
 
 export OMP_NUM_THREADS=1
 export WANDB_MODE=online
-export IBOT_RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-slurm-${SLURM_JOB_ID}"
+export IBOT_RUN_ID="${IBOT_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-slurm-${SLURM_JOB_ID}}"
 export WANDB_API_KEY="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"
 
-srun torchrun --standalone --nproc-per-node=4 train.py train.yaml
+echo "Config:       ${CONFIG_PATH}"
+echo "Output run:   ${IBOT_RUN_ID}"
+echo "W&B run ID:   ${WANDB_RUN_ID:-new run}"
+echo "W&B resume:   ${WANDB_RESUME:-disabled}"
+
+srun torchrun --standalone --nproc-per-node=4 train.py "${CONFIG_PATH}"

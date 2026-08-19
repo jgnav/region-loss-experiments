@@ -22,7 +22,12 @@ from data import DataAugmentationiBOT, ImageFolderMask
 from losses import iBOTLoss
 from model import create_model, iBOTHead
 from utils import training as utils
-from utils.checkpoint import load_pretrained_state, read_pretrained_checkpoint
+from utils.checkpoint import (
+    load_pretrained_state,
+    load_resume_state,
+    read_pretrained_checkpoint,
+    read_resume_checkpoint,
+)
 from utils.recipe import get_ibot_recipe
 
 
@@ -37,9 +42,14 @@ def load_config(path):
         user_config = yaml.safe_load(handle)
 
     config = {**get_ibot_recipe(user_config["arch"]), **user_config}
+    config.setdefault("resume_checkpoint", None)
     for key in ("data_path", "initial_checkpoint", "output_dir"):
         config[key] = os.path.expandvars(os.path.expanduser(config[key]))
     config["initial_checkpoint"] = Path(config["initial_checkpoint"])
+    if config["resume_checkpoint"] is not None:
+        config["resume_checkpoint"] = Path(
+            os.path.expandvars(os.path.expanduser(config["resume_checkpoint"]))
+        )
     return SimpleNamespace(**config)
 
 
@@ -61,6 +71,12 @@ def assign_run_output_directory(args):
     args.output_root = str(output_root)
     args.run_id = run_id
     args.output_dir = str(output_root / run_id)
+    args.wandb_run_id = os.environ.get("WANDB_RUN_ID") or None
+    args.wandb_resume = os.environ.get("WANDB_RESUME") or None
+    if args.wandb_resume and not args.wandb_run_id:
+        raise ValueError("WANDB_RESUME requires WANDB_RUN_ID")
+    if args.wandb_run_id and not args.wandb_resume:
+        args.wandb_resume = "must"
 
 
 def init_wandb(args):
@@ -75,6 +91,8 @@ def init_wandb(args):
         dir=args.output_dir,
         config=config,
         job_type="pretraining-warm-start",
+        id=args.wandb_run_id,
+        resume=args.wandb_resume,
     )
 
 
@@ -82,15 +100,21 @@ def train_ibot(args, wandb_run=None):
     utils.init_distributed_mode(args)
     utils.fix_random_seeds(args.seed)
     args.effective_batch_size = args.batch_size_per_gpu * utils.get_world_size()
-    checkpoint = read_pretrained_checkpoint(args)
+    if args.resume_checkpoint is None:
+        checkpoint = read_pretrained_checkpoint(args)
+        start_epoch = 0
+    else:
+        checkpoint = read_resume_checkpoint(args)
+        start_epoch = checkpoint["epoch"]
     if wandb_run is not None:
         wandb_run.config.update(
             {
                 "effective_batch_size": args.effective_batch_size,
-                "start_epoch": 0,
+                "start_epoch": start_epoch,
                 "final_epoch": args.epochs,
                 "source_checkpoint_epoch": args.source_checkpoint_epoch,
-            }
+            },
+            allow_val_change=True,
         )
     print("\n".join(f"{key}: {value}" for key, value in sorted(vars(args).items())))
     cudnn.benchmark = True
@@ -234,20 +258,37 @@ def train_ibot(args, wandb_run=None):
     )
     print("Loss, optimizer and schedulers ready.")
 
-    load_pretrained_state(checkpoint, student, teacher, ibot_loss)
+    if args.resume_checkpoint is None:
+        load_pretrained_state(checkpoint, student, teacher, ibot_loss)
+    else:
+        start_epoch = load_resume_state(
+            checkpoint,
+            student,
+            teacher,
+            ibot_loss,
+            optimizer,
+            fp16_scaler,
+        )
     del checkpoint
-    source_epoch = args.source_checkpoint_epoch
-    source_description = (
-        f" at epoch {source_epoch}" if source_epoch is not None else ""
-    )
-    print(
-        "Loaded pretrained student, teacher, projection heads, and iBOT "
-        f"centers{source_description}. Starting a fresh {args.epochs}-epoch "
-        "adaptation optimizer and schedules."
-    )
+    if args.resume_checkpoint is None:
+        source_epoch = args.source_checkpoint_epoch
+        source_description = (
+            f" at epoch {source_epoch}" if source_epoch is not None else ""
+        )
+        print(
+            "Loaded pretrained student, teacher, projection heads, and iBOT "
+            f"centers{source_description}. Starting a fresh {args.epochs}-epoch "
+            "adaptation optimizer and schedules."
+        )
+    else:
+        print(
+            "Restored student, teacher, iBOT centers, optimizer, and FP16 "
+            f"scaler from {args.resume_checkpoint}. Resuming at epoch "
+            f"{start_epoch}/{args.epochs} with the original schedule position."
+        )
 
     start_time = time.time()
-    for epoch in range(args.epochs):
+    for epoch in range(start_epoch, args.epochs):
         data_loader.sampler.set_epoch(epoch)
         data_loader.dataset.set_epoch(epoch)
 
@@ -448,7 +489,10 @@ def main():
     args = load_config(cli_args.config)
     assign_run_output_directory(args)
     output_checkpoint = Path(args.output_dir) / "checkpoint.pth"
-    if args.initial_checkpoint.resolve() == output_checkpoint.resolve():
+    if (
+        args.resume_checkpoint is None
+        and args.initial_checkpoint.resolve() == output_checkpoint.resolve()
+    ):
         raise ValueError("The output checkpoint must not overwrite the input checkpoint")
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     wandb_run = None

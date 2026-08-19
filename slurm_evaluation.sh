@@ -6,7 +6,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=32
 #SBATCH --mem-per-cpu=8G
-#SBATCH --time=144:00:00
+#SBATCH --time=24:00:00
 #SBATCH --gres=gpu:a100:4
 
 set -euo pipefail
@@ -19,7 +19,7 @@ fi
 REPO_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 cd "${REPO_DIR}"
 
-CHECKPOINT_PATH="$1"
+CHECKPOINT_PATH="${1:-${REPO_DIR}/output/region_loss/20260818T154524Z-slurm-1295383/checkpoint.pth}"
 DATASETS_ROOT="${2:-${REPO_DIR}/datasets}"
 OUTPUT_DIR="${3:-${REPO_DIR}/output/evaluation/slurm-${SLURM_JOB_ID}}"
 VENV_DIR="${EVALUATION_VENV:-${REPO_DIR}/.venv-evaluation}"
