@@ -53,9 +53,16 @@ RESUME_COMPATIBILITY_KEYS = (
     "warmup_epochs",
     "weight_decay",
     "weight_decay_end",
+    "precision",
     "use_fp16",
     "seed",
 )
+
+RESUME_TOPOLOGY_KEYS = {
+    "batch_size_per_gpu",
+    "gpu_count",
+    "world_size",
+}
 
 
 def _read_checkpoint(path):
@@ -104,6 +111,18 @@ def _checkpoint_argument(checkpoint, name):
 
 
 def _validate_resume_compatibility(checkpoint, args):
+    saved_effective_batch_size = _checkpoint_argument(
+        checkpoint, "effective_batch_size"
+    )
+    configured_effective_batch_size = getattr(
+        args, "effective_batch_size", None
+    )
+    preserve_effective_batch_size = (
+        saved_effective_batch_size is not None
+        and configured_effective_batch_size is not None
+        and saved_effective_batch_size == configured_effective_batch_size
+    )
+
     mismatches = []
     for key in RESUME_COMPATIBILITY_KEYS:
         saved_value = _checkpoint_argument(checkpoint, key)
@@ -111,6 +130,12 @@ def _validate_resume_compatibility(checkpoint, args):
             continue
         configured_value = getattr(args, key)
         if configured_value != saved_value:
+            if key in RESUME_TOPOLOGY_KEYS and preserve_effective_batch_size:
+                continue
+            if key in {"precision", "use_fp16"} and getattr(
+                args, "resume_allow_precision_change", False
+            ):
+                continue
             mismatches.append(
                 f"{key}: checkpoint={saved_value!r}, config={configured_value!r}"
             )

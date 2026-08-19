@@ -1,9 +1,5 @@
 import gc
 import math
-import os
-import site
-import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -14,7 +10,6 @@ from sklearn.metrics import jaccard_score
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader, Subset
 from torchvision import transforms as T
-from tqdm.auto import tqdm
 
 from evaluation.utils.common import (
     base_parser,
@@ -23,10 +18,14 @@ from evaluation.utils.common import (
     launch_distributed_if_needed,
     load_backbone,
     prepare_paths,
+    print_progress,
     utc_now,
     write_json,
 )
 from evaluation.utils.datasets import DATASET_SPECS
+
+
+DENSE_RESOLUTION = 224
 
 
 IMAGENET_NORMALIZE = T.Normalize(
@@ -35,52 +34,7 @@ IMAGENET_NORMALIZE = T.Normalize(
 )
 
 
-def _ensure_rapids_cuda_library_path(module):
-    marker = "IBOT_EVALUATION_CUDA_LIBS_READY"
-    if os.environ.get(marker) == "1":
-        return
-    site_roots = [Path(path) for path in site.getsitepackages()]
-    user_site = site.getusersitepackages()
-    if user_site:
-        site_roots.append(Path(user_site))
-    library_dirs = []
-    for root in site_roots:
-        for package in ("cublas", "cuda_runtime", "cuda_nvrtc"):
-            candidate = root / "nvidia" / package / "lib"
-            if candidate.is_dir():
-                library_dirs.append(candidate.resolve())
-    if not library_dirs:
-        return
-    runtime_libraries = [
-        path / "libcudart.so.12"
-        for path in library_dirs
-        if (path / "libcudart.so.12").is_file()
-    ]
-    if runtime_libraries:
-        shim_dir = Path(tempfile.mkdtemp(prefix="ibot-evaluation-cuda-libs-"))
-        shim = shim_dir / "libcudart.so"
-        shim.symlink_to(runtime_libraries[0])
-        library_dirs.insert(0, shim_dir)
-    environment = os.environ.copy()
-    previous = environment.get("LD_LIBRARY_PATH")
-    components = [str(path) for path in library_dirs]
-    if previous:
-        components.append(previous)
-    environment["LD_LIBRARY_PATH"] = os.pathsep.join(components)
-    python_path = environment.get("PYTHONPATH")
-    python_components = [str(Path(__file__).resolve().parents[2])]
-    if python_path:
-        python_components.append(python_path)
-    environment["PYTHONPATH"] = os.pathsep.join(python_components)
-    environment[marker] = "1"
-    os.execve(
-        sys.executable,
-        [sys.executable, "-m", module, *sys.argv[1:]],
-        environment,
-    )
-
-
-def _dense_transforms(resolution=256):
+def _dense_transforms(resolution=DENSE_RESOLUTION):
     image_transform = T.Compose(
         [
             T.Resize(
@@ -140,7 +94,8 @@ def _extract_features(model, dataset, batch_size, num_workers, description):
     features = None
     labels = None
     offset = 0
-    for images, targets in tqdm(loader, desc=description, unit="batch", dynamic_ncols=True):
+    print(f"{description}: starting {len(loader)} batches", flush=True)
+    for batch_index, (images, targets) in enumerate(loader, start=1):
         images = images.cuda(non_blocking=True)
         tokens = model.get_intermediate_layers(images, n=1)[0][:, 1:]
         grid_size = math.isqrt(tokens.shape[1])
@@ -160,6 +115,7 @@ def _extract_features(model, dataset, batch_size, num_workers, description):
         features[offset:next_offset].copy_(batch_features)
         labels[offset:next_offset].copy_(batch_labels)
         offset = next_offset
+        print_progress(description, batch_index, len(loader))
     if features is None or labels is None:
         raise ValueError(f"No samples found while extracting {description}")
     if offset != features.shape[0]:
@@ -171,7 +127,7 @@ def _extract_features(model, dataset, batch_size, num_workers, description):
 
 def _build_dense_datasets(dataset_name, datasets_root, seed):
     spec = DATASET_SPECS[dataset_name]
-    image_transform, target_transform = _dense_transforms(256)
+    image_transform, target_transform = _dense_transforms()
     full_train = spec["factory"](
         datasets_root,
         spec["train_split"],
@@ -199,7 +155,7 @@ def _load_or_extract_features(model, metadata, args, dataset_name):
         "checkpoint_fingerprint": metadata["checkpoint_fingerprint"],
         "checkpoint_key": metadata["checkpoint_key"],
         "architecture": metadata["architecture"],
-        "resolution": 256,
+        "resolution": DENSE_RESOLUTION,
         "seed": args.seed,
     }
     if args.feature_cache is not None:
@@ -313,7 +269,9 @@ class CAPIKNN:
             dtype=self.train_labels.dtype,
         )
         ranges = range(0, features.shape[0], self.inference_batch_size)
-        for start in tqdm(ranges, desc=description, unit="batch", dynamic_ncols=True):
+        total_batches = len(ranges)
+        print(f"{description}: starting {total_batches} batches", flush=True)
+        for batch_index, start in enumerate(ranges, start=1):
             queries = features[start : start + self.inference_batch_size].float().cuda()
             chunk_distances = []
             chunk_labels = []
@@ -348,6 +306,7 @@ class CAPIKNN:
             )
             batch_predictions = selected_labels.mode(dim=1).values
             predictions[start : start + len(batch_predictions)] = batch_predictions
+            print_progress(description, batch_index, total_batches)
         return predictions
 
 
@@ -404,7 +363,7 @@ class CAPILogisticRegression:
         except ImportError as error:
             raise ImportError(
                 "The exact CAPI linear protocol requires RAPIDS cuML. Install "
-                "evaluation/requirements.txt in the evaluation environment."
+                "the repository requirements.txt in the evaluation environment."
             ) from error
         self.ignore_labels = tuple(ignore_labels)
         self.estimator = cuml.linear_model.LogisticRegression(
@@ -414,7 +373,7 @@ class CAPILogisticRegression:
             output_type="numpy",
             tol=1e-12,
             linesearch_max_iter=50,
-            verbose=True,
+            verbose=False,
         )
         self.estimator.solver_model.lbfgs_memory = 5
 
@@ -432,13 +391,16 @@ class CAPILogisticRegression:
         )
         batch_size = 1024
         ranges = range(0, features.shape[0], batch_size)
-        for start in tqdm(ranges, desc=description, unit="batch", dynamic_ncols=True):
+        total_batches = len(ranges)
+        print(f"{description}: starting {total_batches} batches", flush=True)
+        for batch_index, start in enumerate(ranges, start=1):
             labels = torch.from_numpy(
                 self.estimator.predict(features[start : start + batch_size].numpy())
             ).to(torch.uint8)
             prediction[start : start + len(labels)] = labels[:, None].expand(
                 -1, self.patch_pixels
             )
+            print_progress(description, batch_index, total_batches)
         return prediction
 
 
@@ -446,6 +408,10 @@ def _evaluate_linear(features, labels, ignore_labels):
     regularizations = tuple(float(value) for value in 10 ** np.linspace(-6, 5, 8))
     sweep = []
     for regularization in regularizations:
+        print(
+            f"Fitting CAPI linear probe with C={regularization:.6g}",
+            flush=True,
+        )
         classifier = CAPILogisticRegression(ignore_labels, regularization)
         classifier.fit(features["train"], labels["train"])
         prediction = classifier.predict(
@@ -461,6 +427,10 @@ def _evaluate_linear(features, labels, ignore_labels):
         gc.collect()
         torch.cuda.empty_cache()
     best = max(sweep, key=lambda item: item["miou"])
+    print(
+        f"Refitting CAPI linear probe on train+val with C={best['C']:.6g}",
+        flush=True,
+    )
     classifier = CAPILogisticRegression(ignore_labels, best["C"])
     classifier.fit(
         torch.cat((features["train"], features["val"])),
@@ -516,8 +486,8 @@ def run_dense_evaluation(args, dataset_name, classifier_name, evaluation_name):
         "dataset_sizes": {key: len(value) for key, value in datasets.items()},
         "protocol": {
             "source": "CRISP Appendix A.2 / official CAPI segmentation evaluation",
-            "input_resolution": 256,
-            "patch_tokens": 256,
+            "input_resolution": DENSE_RESOLUTION,
+            "patch_tokens": (DENSE_RESOLUTION // metadata["patch_size"]) ** 2,
             "backbone_frozen": True,
             "feature": "final normalized teacher patch tokens",
             "standardization": "StandardScaler fitted on train only",
@@ -541,8 +511,6 @@ def run_dense_evaluation(args, dataset_name, classifier_name, evaluation_name):
 
 def dense_entrypoint(module, dataset_name, classifier_name, evaluation_name):
     launch_distributed_if_needed(module, required_world_size=1)
-    if classifier_name == "linear":
-        _ensure_rapids_cuda_library_path(module)
     parser = base_parser(
         f"CRISP {DATASET_SPECS[dataset_name]['display_name']} "
         f"{classifier_name} evaluation"

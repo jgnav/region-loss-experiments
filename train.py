@@ -43,6 +43,16 @@ def load_config(path):
 
     config = {**get_ibot_recipe(user_config["arch"]), **user_config}
     config.setdefault("resume_checkpoint", None)
+    config.setdefault("resume_allow_precision_change", False)
+    requested_precision = config.get("precision")
+    if requested_precision is None:
+        requested_precision = "fp16" if config.get("use_fp16", False) else "fp32"
+    if requested_precision not in {"fp32", "fp16", "bf16"}:
+        raise ValueError("precision must be one of: fp32, fp16, bf16")
+    if "precision" in user_config and "use_fp16" in user_config:
+        raise ValueError("Configure precision with either precision or use_fp16, not both")
+    config["precision"] = requested_precision
+    config["use_fp16"] = requested_precision == "fp16"
     for key in ("data_path", "initial_checkpoint", "output_dir"):
         config[key] = os.path.expandvars(os.path.expanduser(config[key]))
     config["initial_checkpoint"] = Path(config["initial_checkpoint"])
@@ -98,6 +108,8 @@ def init_wandb(args):
 
 def train_ibot(args, wandb_run=None):
     utils.init_distributed_mode(args)
+    if args.precision == "bf16" and not torch.cuda.is_bf16_supported():
+        raise RuntimeError("BF16 training is not supported by the allocated GPU")
     utils.fix_random_seeds(args.seed)
     args.effective_batch_size = args.batch_size_per_gpu * utils.get_world_size()
     if args.resume_checkpoint is None:
@@ -234,7 +246,7 @@ def train_ibot(args, wandb_run=None):
     if args.optimizer != "adamw":
         raise ValueError(f"Unsupported optimizer: {args.optimizer}")
     optimizer = torch.optim.AdamW(params_groups)
-    fp16_scaler = torch.cuda.amp.GradScaler() if args.use_fp16 else None
+    fp16_scaler = torch.cuda.amp.GradScaler() if args.precision == "fp16" else None
 
     if args.lr_schedule != "cosine":
         raise ValueError(f"Unsupported learning-rate schedule: {args.lr_schedule}")
@@ -281,9 +293,12 @@ def train_ibot(args, wandb_run=None):
             "adaptation optimizer and schedules."
         )
     else:
+        restored_state = "student, teacher, iBOT centers, and optimizer"
+        if fp16_scaler is not None:
+            restored_state += ", including the FP16 scaler"
         print(
-            "Restored student, teacher, iBOT centers, optimizer, and FP16 "
-            f"scaler from {args.resume_checkpoint}. Resuming at epoch "
+            f"Restored {restored_state} from {args.resume_checkpoint}. "
+            "Resuming at epoch "
             f"{start_epoch}/{args.epochs} with the original schedule position."
         )
 
@@ -409,7 +424,15 @@ def train_one_epoch(
         masks = [mask.cuda(non_blocking=True) for mask in masks]
         crop_boxes = crop_boxes.cuda(non_blocking=True)
 
-        with torch.cuda.amp.autocast(fp16_scaler is not None):
+        autocast_enabled = args.precision in {"fp16", "bf16"}
+        autocast_dtype = (
+            torch.bfloat16 if args.precision == "bf16" else torch.float16
+        )
+        with torch.autocast(
+            device_type="cuda",
+            dtype=autocast_dtype,
+            enabled=autocast_enabled,
+        ):
             teacher_output = teacher(images[: args.global_crops_number])
             student_output = student(
                 images[: args.global_crops_number],
@@ -435,7 +458,22 @@ def train_one_epoch(
             loss = all_loss.pop("loss")
 
         if not math.isfinite(loss.item()):
-            print(f"Loss is {loss.item()}, stopping training", force=True)
+            component_values = {
+                name: value.detach().float().item()
+                for name, value in all_loss.items()
+                if torch.is_tensor(value) and value.numel() == 1
+            }
+            non_finite_components = {
+                name: value
+                for name, value in component_values.items()
+                if not math.isfinite(value)
+            }
+            print(
+                f"Loss is {loss.item()} on rank {utils.get_rank()}, stopping "
+                f"training. Non-finite components: {non_finite_components}; "
+                f"all components: {component_values}",
+                force=True,
+            )
             sys.exit(1)
 
         probs1 = teacher_output[0].chunk(args.global_crops_number)

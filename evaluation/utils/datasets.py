@@ -94,7 +94,7 @@ class PascalVOCDataset(SegmentationDataset):
             except ImportError as error:
                 raise ImportError(
                     "PASCAL VOC augmented masks require scipy; install "
-                    "evaluation/requirements.txt"
+                    "the repository requirements.txt"
                 ) from error
             array = scipy.io.loadmat(path)["GTcls"][0]["Segmentation"][0]
             return Image.fromarray(array.astype(np.uint8))
@@ -161,19 +161,25 @@ def make_pascal_voc(root, split, transform=None, target_transform=None):
     augmented_train = _read_ids(augmented / "train.txt")
     augmented_val = _read_ids(augmented / "val.txt")
     if split == "trainaug":
-        images = [original / "JPEGImages" / f"{item}.jpg" for item in original_train]
-        targets = [
-            original / "SegmentationClass" / f"{item}.png"
-            for item in original_train
-        ]
-        images.extend(
-            augmented / "img" / f"{item}.jpg"
-            for item in augmented_train + augmented_val
-        )
-        targets.extend(
-            augmented / "cls" / f"{item}.mat"
-            for item in augmented_train + augmented_val
-        )
+        # The standard VOC trainaug split contains each image once and excludes
+        # every official VOC validation image. Prefer the original VOC mask when
+        # an image is also present in SBD because it is the curated annotation.
+        validation_ids = set(original_val)
+        seen = set()
+        images = []
+        targets = []
+        for item in original_train:
+            if item in validation_ids or item in seen:
+                continue
+            seen.add(item)
+            images.append(original / "JPEGImages" / f"{item}.jpg")
+            targets.append(original / "SegmentationClass" / f"{item}.png")
+        for item in augmented_train + augmented_val:
+            if item in validation_ids or item in seen:
+                continue
+            seen.add(item)
+            images.append(augmented / "img" / f"{item}.jpg")
+            targets.append(augmented / "cls" / f"{item}.mat")
     elif split == "val":
         images = [original / "JPEGImages" / f"{item}.jpg" for item in original_val]
         targets = [

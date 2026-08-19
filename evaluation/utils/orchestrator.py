@@ -6,8 +6,6 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from tqdm.auto import tqdm
-
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -18,7 +16,6 @@ EVALUATIONS = (
     ("pascal_voc_knn", "evaluation.utils.pascal_voc_knn", "pascal_voc"),
     ("pascal_voc_linear", "evaluation.utils.pascal_voc_linear", "pascal_voc"),
     ("imagenet_knn", "evaluation.utils.imagenet_knn", None),
-    ("imagenet_linear", "evaluation.utils.imagenet_linear", None),
     ("ade20k_knn", "evaluation.utils.ade20k_knn", "ade20k"),
     ("ade20k_linear", "evaluation.utils.ade20k_linear", "ade20k"),
     ("cityscapes_knn", "evaluation.utils.cityscapes_knn", "cityscapes"),
@@ -38,7 +35,7 @@ def _parser():
         "--arch", default="auto", choices=("auto", *ARCHITECTURES)
     )
     parser.add_argument(
-        "--datasets-root", type=Path, default=REPO_ROOT / "datasets"
+        "--datasets-root", type=Path, default=REPO_ROOT / "dataset"
     )
     parser.add_argument(
         "--output-dir",
@@ -65,7 +62,7 @@ def _result_table(results):
     table = []
     pairs = (
         ("PASCAL VOC 2012", "pascal_voc_knn", "pascal_voc_linear"),
-        ("ImageNet-1K 100%", "imagenet_knn", "imagenet_linear"),
+        ("ImageNet-1K 10%", "imagenet_knn", None),
         ("ADE20K", "ade20k_knn", "ade20k_linear"),
         ("Cityscapes", "cityscapes_knn", "cityscapes_linear"),
     )
@@ -73,7 +70,7 @@ def _result_table(results):
         row = {"dataset": dataset}
         if knn_name in results:
             row["knn"] = results[knn_name].get("metrics", {})
-        if linear_name in results:
+        if linear_name is not None and linear_name in results:
             row["linear"] = results[linear_name].get("metrics", {})
         table.append(row)
     return table
@@ -133,10 +130,14 @@ def main(argv=None):
         args.result_json, args, started_at, "running", results
     )
 
-    progress = tqdm(EVALUATIONS, desc="Full CRISP evaluation", unit="evaluation")
-    for name, module, cache_name in progress:
-        progress.set_postfix_str(name)
-        tqdm.write(f"\n[{len(results) + 1}/{len(EVALUATIONS)}] Starting {name}")
+    print(f"Starting {len(EVALUATIONS)} CRISP evaluations", flush=True)
+    for evaluation_index, (name, module, cache_name) in enumerate(
+        EVALUATIONS, start=1
+    ):
+        print(
+            f"\n[{evaluation_index}/{len(EVALUATIONS)}] Starting {name}",
+            flush=True,
+        )
         result_path = args.output_dir / f"{name}.json"
         command = [
             sys.executable,
@@ -172,7 +173,7 @@ def main(argv=None):
                 results,
                 error=error,
             )
-            tqdm.write(f"Full evaluation stopped: {error}")
+            print(f"Full evaluation stopped: {error}", flush=True)
             return completed.returncode
         try:
             with result_path.open("r", encoding="utf-8") as handle:
@@ -187,17 +188,20 @@ def main(argv=None):
                 results,
                 error=error,
             )
-            tqdm.write(f"Full evaluation stopped: {error}")
+            print(f"Full evaluation stopped: {error}", flush=True)
             return 1
         _write_summary(
             args.result_json, args, started_at, "running", results
         )
-        tqdm.write(f"Completed {name}")
+        print(f"Completed {name}", flush=True)
 
     _write_summary(
         args.result_json, args, started_at, "completed", results
     )
-    tqdm.write(f"Full evaluation completed. Result table: {args.result_json}")
+    print(
+        f"Full evaluation completed. Result table: {args.result_json}",
+        flush=True,
+    )
     return 0
 
 

@@ -20,6 +20,15 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 ARCHITECTURES = ("vit_small", "vit_base", "vit_large")
 
 
+def print_progress(description, current, total, updates=10):
+    """Print bounded progress updates without terminal control characters."""
+    if total <= 0:
+        return
+    interval = max(1, total // updates)
+    if current == 1 or current == total or current % interval == 0:
+        print(f"{description}: {current}/{total}", flush=True)
+
+
 def base_parser(description):
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument("checkpoint", type=Path, help="iBOT/region-loss checkpoint")
@@ -38,7 +47,7 @@ def base_parser(description):
     parser.add_argument(
         "--datasets-root",
         type=Path,
-        default=REPO_ROOT / "datasets",
+        default=REPO_ROOT / "dataset",
         help="Directory containing the pre-downloaded datasets",
     )
     parser.add_argument(
@@ -278,6 +287,10 @@ def initialize_distributed(seed=0, allow_tf32=False):
 
 def cleanup_distributed():
     if dist.is_initialized():
+        # Keep the group alive until PyTorch's distributed exception hook has
+        # reported the original error. The process exit will release it.
+        if sys.exc_info()[0] is not None:
+            return
         dist.barrier()
         dist.destroy_process_group()
 
